@@ -87,6 +87,33 @@ step entirely, so re-creates stay unattended.
 Deleting the machine does not revoke the token — GitHub Settings → Applications
 → GitHub CLI does.
 
+**Run `create` from a shell with no ambient `GITHUB_TOKEN`.** Before starting
+the device flow, walter probes the sandbox with `gh auth status` and
+`gh api user -q .login`, and reuses the login when the name matches
+`github-account`. `gh` falls back to `GITHUB_TOKEN` from the environment when
+the config dir has no token of its own — and the workspace root
+`~/code/getcolors/.envrc` exports exactly that. Both probes then succeed and
+return `amiorin`, which matches, so walter takes the reuse branch and seeds the
+machine with the **workspace PAT** instead of minting a device-flow token.
+
+Verified at the probe level against the empty sandbox: `gh auth status` succeeds
+and `gh api user -q .login` answers `amiorin` with `GH_CONFIG_DIR` pointing at a
+directory containing nothing. What follows from that — walter's reuse branch —
+is read from `github.clj`, not observed end to end.
+
+It matters because the scopes differ. The device flow asks for `workflow`; that
+PAT carries `repo` and `read:org`, so a machine seeded this way would be quietly
+unable to push workflow files, with nothing in the create's output saying so.
+
+`direnv exec .` from this directory is safe — walter-liliana's `.envrc` does not
+source the workspace root's, so `GITHUB_TOKEN` is absent. A shell that has cd'd
+through `~/code/getcolors` with direnv hooked is **not** safe. Check before
+starting:
+
+```sh
+echo "[${GITHUB_TOKEN-unset}]"    # must print [unset]
+```
+
 ## What the machine gets
 
 The remote stage installs **nix**, a **Ghostty terminfo entry**, and kernel
