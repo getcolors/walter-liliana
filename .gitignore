@@ -1,0 +1,7 @@
+.*
+!.envrc
+!.gitignore
+!.nojekyll
+!.agents
+!.claude
+node_modules/

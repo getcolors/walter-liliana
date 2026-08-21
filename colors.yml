@@ -1,0 +1,138 @@
+# Desired state for one Walter development machine.
+#
+# This is the only file you edit. Keys are kebab-case and every value here is
+# non-secret; credentials are COLORS_PAR_* variables in the gitignored
+# .envrc.private. OCI is the exception — it authenticates from the session
+# profile named below in ~/.oci/config.
+
+# Names the work directory, the OpenTofu state keys and the ~/.ssh/config Host
+# alias — so this machine is `ssh walter-liliana`. It also names the generated
+# keypair (see machine access below). Never export COLORS_PAR_PROFILE: the
+# profile is what separates this deployment's state from every other one in the
+# shared bucket, and walter refuses to run when it is set.
+profile: walter-liliana
+workdir: .colors
+
+provider-compute: oci
+provider-backend: r2
+
+# The delete guard. Lift it for a single run with
+# COLORS_PAR_COMPUTE_PREVENT_DESTROY=false; never edit it here.
+compute-prevent-destroy: true
+
+# The OCI CLI returns before a power transition finishes, so walter always
+# waits for the terminal state.
+power-wait-seconds: 300
+
+# --- machine access ---------------------------------------------------------
+#
+# Walter generates and manages the machine-access keypair for this deployment:
+# ed25519, no passphrase, ~/.ssh/walter-liliana on this workstation, feeding
+# the public half to OCI, pinning `ssh walter-liliana` to it with IdentityFile
+# + IdentitiesOnly, and connecting Ansible with it too.
+#
+# The file is named by the profile alone, which is why the profile is named for
+# the deployment: an existing key file is never regenerated, so a profile that
+# collided with a key already in ~/.ssh would silently adopt it and authorize a
+# personal key on the machine.
+#
+# With this on, oci-ssh-authorized-keys is walter's to derive — setting it here
+# is refused rather than silently overwritten.
+compute-keygen: true
+
+# --- oci --------------------------------------------------------------------
+#
+# The same tenancy walter-ada uses. The DEFAULT session profile must
+# authenticate to it; session tokens last 60 minutes.
+oci-config-file-profile: DEFAULT
+oci-compartment-id: ocid1.tenancy.oc1..aaaaaaaal4wmmpzv2fzkdz2vrfdizywgzjid6dqlgcankrrr7jyydo7ozb3a
+oci-subnet-id: ocid1.subnet.oc1.eu-frankfurt-1.aaaaaaaaotya32pihejgi25vrdfnjda3qg52kpsjnd7od5oiqifbsi4rqqma
+oci-availability-domain: xTQn:EU-FRANKFURT-1-AD-1
+oci-display-name: walter-liliana
+oci-shape: VM.Standard.A2.Flex
+oci-ocpus: 2
+oci-memory-in-gbs: 12
+oci-boot-volume-size-in-gbs: 100
+oci-boot-volume-vpus-per-gb: 30
+oci-image-id: ocid1.image.oc1.eu-frankfurt-1.aaaaaaaal4itgbo25fulz7jbwyjdk2qc775l4npiqraf44ac62pf4iqfddsa
+
+# --- github identity --------------------------------------------------------
+#
+# The machine gets its own GitHub login, minted by a device flow at the start
+# of a real create: gh logged in with that token, git authenticating https
+# through it, and this commit identity configured. Every clone below rides it —
+# no ssh key for GitHub and no agent forwarding anywhere.
+github-account: amiorin
+git-email: 32617+amiorin@users.noreply.github.com
+
+# --- editor -----------------------------------------------------------------
+#
+# https only. A git@ or ssh:// URL is refused: the clone authenticates through
+# the machine's own token, and nothing of this workstation's reaches it.
+emacs-config-repo: https://github.com/amiorin/.emacs.d.git
+emacs-config-dest: ~/.config/neoemacs
+
+# --- tooling ----------------------------------------------------------------
+#
+# Installed with `nix profile add` on top of the nix every walter machine gets.
+nix-packages:
+  - asdf-vm
+  - ripgrep
+  - fd
+  - fish
+  - fzf
+  - gh
+  - caddy
+  - awscli2
+  - azure-cli
+  - google-cloud-sdk
+  - oci-cli
+  - babashka
+  - clojure
+  - starship
+  - zoxide
+  - atuin
+  - direnv
+  - eza
+  - zellij
+  - gcc
+  - devenv
+  - claude-code
+  - codex
+  - pi-coding-agent
+
+# Resolved under ~/.nix-profile/bin, so it has to be one of the packages above.
+login-shell: fish
+
+asdf-tools:
+  - name: nodejs
+    version: 24.18.1
+    plugin: https://github.com/asdf-vm/asdf-nodejs.git
+
+corepack-packages:
+  - pnpm
+
+# Runs that checkout's own `./green create` after clone-orgs, using its own
+# colors.yml. Stamped under ~/.local/state/walter and not repeated.
+dotfiles-checkout: ~/code/getcolors/dotfiles
+
+# Organisations, never repositories. The listing is read from GitHub on the
+# machine at create time through its own gh login, so it sees private
+# repositories and complete organisations; forks and archived ones are skipped.
+clone-orgs:
+  - getcolors
+
+atuin-username: amiorin
+
+# One credential file per agent, copied from this workstation — never the
+# directory around it, and never over a login made on the machine.
+seed-agent-credentials:
+  - claude
+  - codex
+  - pi
+
+# --- backend ----------------------------------------------------------------
+#
+# Shared bucket, isolated by the <profile>/<stage>.tfstate key.
+r2-bucket: tofu-state-319271fed8bc6d2d9059362be1165f37-eu
+r2-endpoint: https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com
