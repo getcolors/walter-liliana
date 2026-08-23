@@ -50,7 +50,7 @@
 ;; cannot resolve its own library says so rather than inventing a SHA or
 ;; silently falling back to whatever is lying around. `bb pin` refuses to stamp
 ;; a dirty or unpushed HEAD for the same reason.
-(def ^:private walter-sha "119ac0fd85bae5ec42d948e1c5a23911ce7acd79")
+(def ^:private walter-sha "9c9ffb9670817460266142780b695e4a0dbc8ef1")
 
 (def ^:private walter-git-url "https://github.com/getcolors/walter.git")
 (def ^:private once-git-url "https://github.com/getcolors/once.git")
@@ -165,7 +165,7 @@
        "  build    render the work directory only — no provider is contacted\n"
        "  create   provision the machine and record it in ~/.ssh/config\n"
        "  delete   destroy it, dropping the ssh block first\n"
-       "  stop     power it off  (OCI only; a no-op elsewhere)\n"
+       "  stop     power it off  (OCI/Vultr; a no-op elsewhere)\n"
        "  start    power it on and refresh its address"))
 
 (defn run
