@@ -97,6 +97,7 @@ nix-packages:
   - zellij
   - gcc
   - devenv
+  - age
   - claude-code
   - codex
   - pi-coding-agent
