@@ -1,5 +1,15 @@
 # CLAUDE.md
 
+## Current package contract
+
+The installed launcher now uses colors-compute. Read [compute-migration.md](compute-migration.md)
+before any live operation. That runbook supersedes the older runtime descriptions
+below concerning monolithic state, instance-ID escape hatches, forwarded GitHub
+agents, key adoption, and keys surviving deletion. Those descriptions record the
+previous package pin and do not prove the current live machine was migrated.
+No live state or application change was performed during this payload refresh.
+
+
 This file provides guidance to Claude Code when working with this repository.
 
 ## What this repository is

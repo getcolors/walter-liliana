@@ -17,17 +17,16 @@ did not want.
 |---|---|
 | `profile` | Names the work directory, the OpenTofu state keys and the `~/.ssh/config` Host alias. Must be unique across projects on the machine. |
 | `workdir` | Where walter renders, resolved next to `colors.yml`. Conventionally `.colors`. |
-| `provider-compute` | `oci` \| `hcloud` \| `digitalocean` \| `yandex` \| `no-infra` |
-| `provider-backend` | `local` \| `s3` \| `r2` |
+| `provider-compute` | `azure` \| `aws` \| `google` \| `digitalocean` \| `hcloud` \| `vultr` \| `yandex` \| `oci` |
+| `provider-backend` | `s3` \| `r2` |
 | `compute-prevent-destroy` | `true` or `false`. Renders `lifecycle { prevent_destroy = … }`. |
 
 ### On `profile`
 
 It is the only thing separating this project's OpenTofu state from another's.
-Remote state is keyed `<profile>/walter-compute.tfstate`, so two walter projects
-sharing a bucket must not share a profile. The stage name is walter-specific, so
-a walter project can safely share a bucket with an ONCE deployment even on the
-same profile — but do not rely on that, name the profile after the directory.
+Remote state uses library shared/node keys and an ownership journal under the
+profile. Every deployment sharing a backend must use a unique profile. Legacy
+`<profile>/walter-compute.tfstate` requires explicit migration and is never adopted.
 
 **`COLORS_PAR_PROFILE` is rejected.** Walter refuses to start when it is set.
 There is no legitimate use: overriding the profile from the environment can only
@@ -35,53 +34,25 @@ point walter at state that belongs to something else.
 
 ## Power
 
-| Key | Meaning |
-|---|---|
-| `power-wait-seconds` | How long to wait for a power transition. Default 300. |
-| `oci-instance-id` | Optional. The OCID `stop`/`start` act on. |
-
-`oci-instance-id` is an escape hatch, not a normal setting. Left unset, walter
-reads the instance id from the compute stage's `instance_id` OpenTofu output,
-which needs the state backend to be reachable. Setting it — copy what `tofu
-output instance_id` reports in the stage directory — means power cycling keeps
-working when the backend does not, so a broken bucket cannot strand the user
-with a running machine they cannot stop.
-
-Only `oci` can be power cycled. Every other provider makes `stop` and `start` a
-reported no-op.
+`power-wait-seconds` defaults to 300 and accepts 1 through 1800 seconds.
+The library supports OCI and Vultr power actions, requires existing owned state
+and coordination, waits for completion and refreshes the start address.
+Unsupported providers refuse. `oci-instance-id` and `vultr-instance-id` are
+retired: desired IDs cannot bypass state ownership.
 
 ## Machine access
 
-| Key | Meaning |
-|---|---|
-| `compute-keygen` | Optional, `true` or `false`. Walter generates the machine-access keypair per deployment and feeds it to the provider. |
+Omit the selected provider SSH setting for a managed profile-named keypair.
+The library records ownership before generating `~/.ssh/<profile>`, refuses
+unowned collisions and missing owned keys, and cleans up only after confirmed
+destruction. Build uses stable placeholders and reads no private material.
 
-Set `true` and walter generates `~/.ssh/<profile>` (ed25519, no
-passphrase) on the workstation at create time, if absent, and derives the
-per-provider key values from it: `oci-ssh-authorized-keys` becomes the
-generated public key's path, `compute-pubkey` its content, and on hcloud and
-DigitalOcean — whose instances take a key already registered with the
-provider — walter renders an `ssh-key.tf` resource beside the compute template
-and references it. The managed `~/.ssh/config` block then pins
-`ssh <profile>` to that key (`IdentityFile` + `IdentitiesOnly`), and Ansible
-connects with it. The apply itself runs under a short-lived ssh-agent walter
-starts with that key loaded, because the compute template's "wait for ssh"
-provisioner authenticates through an agent and nothing else would hold a key
-this new; the agent dies with the apply.
-
-**Leave the per-provider ssh key values out when this is on** — they are
-walter's to derive, and the build refuses the combination. An existing key
-file is never regenerated, and `delete` leaves the files in `~/.ssh` alone: a
-keypair is not provider state, and the next create of the same profile adopts
-it.
-
-The file carries no prefix, so the profile is the whole name and the whole
-namespace. "Adopts it" is the trap: a profile that happens to match a key the
-operator already has authorizes *that* key on the machine rather than minting a
-new one, with no warning. A profile named for the deployment
-(`walter-liliana` → `~/.ssh/walter-liliana`) cannot collide.
-
-Left unset, you supply a key per provider exactly as documented below.
+An explicit provider SSH setting selects external mode. No local keypair is
+created or removed. The managed SSH config then omits IdentityFile and
+IdentitiesOnly. The generic `ssh-private-key-path` may select an existing
+private identity for Ansible. Root-login images bootstrap ubuntu by preserving
+existing authorized keys in external mode; managed mode installs its generated
+public key. `compute-keygen` is retired; no compute-key-mode flag exists.
 
 ## GitHub identity
 
@@ -120,55 +91,17 @@ GitHub Settings → Applications → GitHub CLI.
 
 ## Compute providers
 
-Only the selected provider's keys are required — except under
-`compute-keygen`, which derives the ssh key values (and only those) itself.
+Provider settings and credential requirements belong to the pinned
+[colors-compute library](https://github.com/getcolors/colors-compute).
+Azure uses the ambient Azure CLI session; AWS the ambient credential chain;
+Google Application Default Credentials; OCI the selected profile in ~/.oci/config.
+DO, hcloud, Vultr and Yandex use COLORS_PAR_DO_TOKEN, COLORS_PAR_HCLOUD_TOKEN,
+COLORS_PAR_VULTR_API_KEY and COLORS_PAR_YANDEX_TOKEN respectively.
 
-**oci** — authenticates from `~/.oci/config`, no `COLORS_PAR_*` of its own.
-
-```
-oci-config-file-profile   oci-subnet-id            oci-compartment-id
-oci-availability-domain   oci-display-name         oci-shape
-oci-ocpus                 oci-memory-in-gbs        oci-boot-volume-size-in-gbs
-oci-boot-volume-vpus-per-gb                        oci-ssh-authorized-keys
-```
-
-`oci-image-id` is optional and worth setting once the machine is real. Left
-unset, the newest compatible Canonical Ubuntu 24.04 image is used — convenient
-first time, a moving target afterwards. The image id forces replacement, so with
-`compute-prevent-destroy: true` a later apply **fails** rather than destroying
-anything. Safe, and confusing if you do not know why.
-
-`oci-ssh-authorized-keys` is a **path** to a public key file, read by OpenTofu at
-plan time. Not the key material.
-
-**hcloud** — `COLORS_PAR_HCLOUD_TOKEN`
-
-```
-hcloud-name  hcloud-image  hcloud-server-type  hcloud-location  hcloud-ssh-keys
-```
-
-**digitalocean** — `COLORS_PAR_DO_TOKEN`
-
-```
-digitalocean-name  digitalocean-region  digitalocean-size
-digitalocean-image digitalocean-ssh-keys
-```
-
-**yandex** — `COLORS_PAR_YANDEX_TOKEN`, and `compute-pubkey` holding the public
-key content.
-
-```
-yandex-cloud-id  yandex-folder-id  yandex-zone      yandex-image-family
-yandex-name      yandex-subnet-cidr yandex-platform-id
-yandex-cores     yandex-memory-gb  yandex-core-fraction yandex-disk-size-gb
-```
-
-**no-infra** — an existing machine walter configures but does not provision.
-
-```
-no-infra-compute-ip  no-infra-compute-user  no-infra-compute-sudoer
-no-infra-compute-uid
-```
+Walter requests one public-only host with SSH ingress. `walter-ssh-sources`
+restricts that ingress; the selected provider's legacy ssh-sources setting is
+accepted by the library helper. Root-login images share the same ubuntu
+bootstrap; provider names do not select application behavior.
 
 ## Editor
 
@@ -200,13 +133,15 @@ edits made on the machine are never discarded — pulling is the user's call.
 | `login-shell` | Optional. A shell from `nix-packages`, made the account's login shell. |
 
 Resolved against `nixpkgs-unstable`. That is a channel branch and not a
-revision, so these track upstream: two creates months apart do not produce the
-same versions. Deliberate for a development machine — and it is what makes asdf
-0.20 reachable at all.
+revision, so a first install tracks upstream and `converge-nix` advances existing
+declared entries to its current revision. Deliberate for a development machine —
+and it is what makes current asdf reachable at all.
 
 The list is the machine's **baseline, not an inventory**. Anything installed by
 hand on the machine is invisible here and does not survive a delete; adding a
-name is what makes it come back.
+name is what makes it come back. `converge-nix` identifies declared entries by
+both their attribute and original nixpkgs URL, updates only stale matches, and
+preserves unrelated profile elements. Removing a name does not uninstall it.
 
 **Unfree packages install.** The one `nix profile add` runs with
 `NIXPKGS_ALLOW_UNFREE=1` and `--impure`, which are needed by each other: the
@@ -252,6 +187,23 @@ changed in the same commit.
 corepack installs its shims into that Node's own bin directory, which asdf does
 not expose until told to look again; the playbook reshims. Skip that and
 `corepack enable pnpm` reports success while `pnpm` stays command-not-found.
+
+## Focused convergence commands
+
+`converge-nix` and `converge-asdf` run the same Nix/asdf task sources as
+`create`, but only against the existing managed SSH aliases: the primary login
+and every configured seat. They do not read OpenTofu state or need provider and
+backend credentials. The machine must already exist and be running.
+
+`converge-nix` ensures the declared Nix entries exist and updates stale declared
+entries. `converge-asdf` installs the exact declared runtime versions and repeats
+Corepack enable/reshim. Both accept `--dry-run`; neither selects an unpinned
+latest asdf runtime.
+
+Every task is safe to run again. Asdf reports no change once converged. Nix
+reports a change when it actually advances an element; its changed flag reads
+Nix's current output wording, so wording changes can affect reporting without
+affecting the installed profile.
 
 ## Dotfiles
 
@@ -382,36 +334,69 @@ there, or delete the file there and run `create` again.
 
 Note that seeding a shared account means two machines refreshing against one
 refresh token, and `~/.pi/agent/auth.json` in particular can hold long-lived API
-keys alongside the OAuth triple.
+keys alongside the OAuth triple. With seats (below) the same files are seeded
+into every home, so N+1 copies share that one refresh token: when a rotation on
+one logs another out, log back in there — the `force: false` guard means walter
+never clobbers the fresh session.
 
-## State backends
+## Seats
+
+| Key | Meaning |
+|---|---|
+| `users` | Optional. Extra unix logins ("seats") beside the primary one — one person's isolated workspaces, kept apart by file permissions. |
+
+```yaml
+users:
+  - jack
+  - emma
+```
+
+Names only, lowercase unix logins; `ubuntu` and `root` are refused. Everything
+identity-shaped in this file stays **singular** — the seats are one person's
+workspaces, not people — and each seat's home is provisioned with the same
+desired state as the primary login's: same nix profile, same login shell, same
+GitHub identity (the one device-flow token, seeded into each home), same Emacs
+configuration, dotfiles, org checkouts, agent credentials and atuin account.
+`ssh <profile>-<seat>` reaches each one; walter manages one `~/.ssh/config`
+block per seat beside the primary block, opening to the same machine key.
+
+The isolation contract, stated plainly:
+
+- A seat holds **no sudo**. The primary login keeps it and is the trust root —
+  it can inspect any seat, and system-level work happens from it. Do not grant
+  a seat sudo on the machine; a sudoer can read every home, which deletes the
+  feature.
+- Homes are mode `0700`, so seats cannot read or write each other's files or
+  working trees.
+- The boundary is filesystem and process, **not network or identity**: seats
+  share localhost, `/tmp`, and every credential seeded into their homes.
+
+Seats multiply the long parts of a create — the org clones and the Emacs
+package warm run once per home — and the atuin history is one account seen
+from every seat: filter by directory to recall per workspace.
 
 | Backend | Keys | Credentials |
 |---|---|---|
-| `local` | — | — |
 | `s3` | `s3-bucket` `s3-region` | ambient AWS chain |
 | `r2` | `r2-bucket` `r2-endpoint` | `COLORS_PAR_R2_ACCESS_KEY_ID` `COLORS_PAR_R2_SECRET_ACCESS_KEY` |
 
-`local` keeps state in the work directory, which is generated output — fine for
-a machine you can recreate, wrong for one you cannot. Use a remote backend for
-anything you would be annoyed to lose.
+Remote backend configuration and credentials are owned by the library.
 
 ## What walter renders
 
 ```
 <workdir>/<profile>/
-├── walter-compute/          backend.tf.json  main.tf  [outputs.tf]  [ssh-key.tf]
+├── walter-compute/          shared/*.tf.json  nodes/0/*.tf.json
+├── walter-ansible-bootstrap/ ansible.cfg  inventory.json  main.yml  # root-login images
+├── walter-ansible-seats/    ansible.cfg  inventory.json  main.yml  # only with users
 ├── walter-ansible-local/    ansible.cfg  inventory.ini  main.yml
 ├── walter-ansible-remote/   ansible.cfg  inventory.json  main.yml
 └── walter-emacs-packages/   ansible.cfg  inventory.json  main.yml
 ```
 
-`outputs.tf` appears only for providers walter can power cycle; it publishes the
-instance id the power verbs act on. `ssh-key.tf` appears only under
-`compute-keygen` on hcloud and DigitalOcean, where keys are registered with the
-provider rather than passed as material. `walter-emacs-packages/` appears only
-when `emacs-config-repo` is set — it is a whole stage rather than a task, so
-with no Emacs there is no directory at all.
+The bootstrap stage appears for normalized root logins. The Emacs stage appears
+only when emacs-config-repo is set. Runtime reads library-owned remote state,
+never generated output as a fallback inventory.
 
 Never edit any of it. It is regenerated on every run.
 
@@ -456,6 +441,7 @@ renders a playbook that does not mention them at all:
 | `seed-agent-credentials` | one credential file per named agent, copied from the controller; Claude also gets a missing onboarding flag |
 | `clone-orgs` | every source repository of each org, cloned to `~/code/<org>/<repo>` |
 | `atuin-username` | `atuin login`, then `atuin sync` |
+| `users` | one no-sudo unix login per seat, each home provisioned like the primary one |
 
 Emacs comes from `nixpkgs-unstable#emacs`, the same ref as the terminfo and
 `nix-packages` steps — the full build, with native compilation and tree-sitter.

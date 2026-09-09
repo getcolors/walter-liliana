@@ -38,7 +38,6 @@ power-wait-seconds: 300
 #
 # With this on, oci-ssh-authorized-keys is walter's to derive — setting it here
 # is refused rather than silently overwritten.
-compute-keygen: true
 
 # --- oci --------------------------------------------------------------------
 #

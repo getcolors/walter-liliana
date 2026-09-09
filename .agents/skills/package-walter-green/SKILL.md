@@ -1,6 +1,6 @@
 ---
 name: package-walter-green
-description: Creates and operates a remote development machine with Green, OpenTofu and Ansible, and powers it off and on to stop paying for it while you sleep. Use when initializing a walter project, generating colors.yml, selecting a compute or state provider, building or dry-running configuration, provisioning or destroying the machine, or stopping and starting it.
+description: Creates and operates a remote development machine with Green, OpenTofu and Ansible, powers it off and on, and focuses Nix or asdf convergence across every login. Use when initializing a walter project, generating colors.yml, selecting providers, building or provisioning the machine, stopping or starting it, or converging declared Nix packages and asdf runtimes.
 license: MIT
 ---
 
@@ -13,7 +13,9 @@ directory. Walter provisions one machine, records it in `~/.ssh/config` so
 ## Requirements
 
 Babashka runs the launcher. `create` and `delete` also need OpenTofu and
-Ansible. `stop` and `start` need the `oci` CLI and a live session. With
+Ansible. `stop` and `start` need the provider's power credentials.
+`converge-nix` and `converge-asdf` need an already-created, running machine and
+its managed SSH aliases, but no provider or backend credentials. With
 `github-account` set, a real `create` also needs `gh` on the workstation — it
 runs GitHub's device flow as its first action. Provider credentials use
 `COLORS_PAR_*` variables, except OCI, which uses the profile named in
@@ -30,8 +32,8 @@ runs GitHub's device flow as its first action. Provider credentials use
 - Public SSH keys are not secrets; private ones are. `oci-ssh-authorized-keys`
   holds the **path** to a public-key file that OpenTofu reads at plan time —
   record the path, never inline the contents, and never read a private key.
-  With `compute-keygen: true` walter generates and manages
-  `~/.ssh/<profile>` itself; never read or move that file either.
+  By default walter generates and manages the machine keypair
+  `~/.ssh/<profile>`; never read or move those files either.
 - With `github-account` set, a real `create` starts by printing a one-time
   code and waiting — up to about fifteen minutes — for the user to approve it
   at https://github.com/login/device. That is the design, not a hang: the
@@ -66,6 +68,8 @@ generating or changing desired state, and before any real `create` or `delete`.
 ./green create             # provision, and write the ssh config block
 ./green stop               # power off
 ./green start              # power on, and refresh the ssh config block
+./green converge-nix       # update declared Nix entries on every login
+./green converge-asdf      # install declared asdf versions on every login
 ./green delete             # destroy, dropping the ssh block first
 ```
 
@@ -88,9 +92,9 @@ directory.
    approve from a browser. This is required before offering
    `emacs-config-repo`, `clone-orgs` or `dotfiles-checkout` — their clones
    authenticate through it.
-5. Ask whether walter should generate the machine-access ssh keypair
-   (`compute-keygen: true`) or whether the user supplies a provider key as
-   before.
+5. The machine-access keypair needs no collection: walter generates a
+   profile-named keypair by default (SSH Keypair Standard). Only when the
+   user wants their own key, collect the provider's machine-key value.
 6. Ask whether the user wants their Emacs configuration on the machine. If so,
    set `emacs-config-repo` to its **https** git URL (`git@`/`ssh://` forms are
    refused) and `emacs-config-dest` to where it must live — the default is
@@ -140,24 +144,38 @@ and is expected. Do not report it as a provisioning failure.
 mechanism: `ssh walter-oci` sees them, `ssh walter-oci emacs …` as a one-shot
 command does not.
 
+## Focused tooling convergence
+
+`converge-nix` and `converge-asdf` operate only on an existing, running machine.
+They use `ssh <profile>` and every `ssh <profile>-<seat>` alias, never OpenTofu
+state or a provider API. If an alias or prerequisite binary is absent, run
+`create`; if the machine is stopped, run `start`.
+
+`converge-nix` ensures every `nix-packages` entry exists, resolves the profile
+elements Walter owns from `nix profile list --json`, and advances only stale
+declared elements to the current `nixpkgs-unstable`. It preserves unrelated
+packages installed by the user and does not remove a former declaration.
+
+`converge-asdf` adds missing plugins, installs the exact `asdf-tools` versions,
+sets them for the home, and repeats Corepack enable/reshim so a Node change does
+not make pnpm disappear. It never chooses `latest` on its own.
+
+Both commands support `--dry-run`, and every task is safe to run again.
+`converge-asdf` reports no change once its exact versions are converged.
+`converge-nix` reports a change when Nix advances an element; that flag follows
+Nix's current `upgrading ` wording, so an upstream rewording can misreport the
+flag without changing what is installed.
+
 ## Stopping and starting
 
-`stop` and `start` never reach OpenTofu. No template declares a power state, so
-powering the machine off out of band causes no drift — there is nothing for
-OpenTofu to reconcile.
+The colors-compute library coordinates OCI and Vultr power operations using
+the immutable ID from owned remote node state. Both need a reachable state
+backend; unsupported providers refuse. An uncertain action retains ownership
+coordination for recovery. Start waits for a running state, reads the current
+public address, then refreshes SSH aliases. It does not recreate the VM.
 
-Consequences worth telling the user about:
-
-- **Only OCI can be power cycled today.** Everywhere else `stop` reports that
-  and exits 0. That is deliberate, not a bug. Do not present it as a failure.
-- **`create` will not restart a stopped machine.** With no power state in the
-  configuration there is no diff, so an apply leaves it stopped. `start` is the
-  only way up.
-- **Stopping stops the compute meter, not the storage one.** The boot volume
-  bills whether the machine runs or not.
-- **`stop` and `start` need the `oci` CLI to authenticate**, which OpenTofu does
-  not. Session tokens last 60 minutes. When walter reports an expired session it
-  names the command that fixes it; run that, then retry.
+OCI uses its configured CLI profile; Vultr uses COLORS_PAR_VULTR_API_KEY.
+Power billing depends on the provider and storage remains allocated.
 
 ## When something fails
 
@@ -165,10 +183,9 @@ Consequences worth telling the user about:
   another project's `.envrc`. Unset it; do not work around it.
 - **`required credential is not set: COLORS_PAR_X`** — name the variable and let
   the user export it themselves.
-- **`no instance id`** — walter could not read the compute stage's `instance_id`
-  output and desired state carries none. Either the machine was never created,
-  or the state backend is unreachable. `oci-instance-id` in `colors.yml` is the
-  documented escape hatch.
+- **Compute ownership or power refused** — inspect backend connectivity and
+  the owned deployment journal. Do not set an instance-ID override or treat an
+  unreadable state as absent. Legacy monolithic state requires explicit migration.
 - **`gh auth login failed`** — `gh` is missing on the workstation, or the
   one-time code expired unapproved. Install gh or re-run `create` and approve
   the code; there is no token to paste anywhere.
@@ -181,3 +198,9 @@ Consequences worth telling the user about:
   from the account the machine is meant to act as, or fix `github-account`.
 - **A contract mismatch** — the pinned commit is older than this launcher.
   Re-copy `green` from an updated skill; nothing inside the project fixes it.
+- **Focused convergence reports that a host key changed** — unlike create,
+  `converge-nix` and `converge-asdf` deliberately keep SSH host-key checking
+  enabled. For the narrow same-address/different-key case after a rebuild, run
+  `ssh-keygen -R <address-from-the-error>` and retry. Use the address SSH names,
+  not the managed alias; every seat shares that address. Hashed `known_hosts`
+  entries cannot be repaired reliably by eye.
